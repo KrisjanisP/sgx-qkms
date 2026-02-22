@@ -1,20 +1,25 @@
-mod etsi014_handler;
+use rustls::RootCertStore;
+use std::{fs::File, io::BufReader};
 
 #[tokio::main]
 async fn main() {
-    use std::io::Write;
-    use std::sync::Arc;
+    const CA_CERT_PATH: &str = "certs/ca/ca.crt";
 
-    let addr = std::env::var("QKMS_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
-    let handler = Arc::new(etsi014_handler::Etsi014Handler);
-    let app = qkd014_server_gen::server::new(handler);
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .expect("failed to bind TCP listener");
+    let cert_file = File::open(CA_CERT_PATH)
+        .unwrap_or_else(|e| panic!("Failed to open CA cert at {CA_CERT_PATH}: {e}"));
+    let mut cert_reader = BufReader::new(cert_file);
 
-    println!("Server is active on http://{addr}");
-    std::io::stdout().flush().expect("failed to flush stdout");
-    axum::serve(listener, app)
-        .await
-        .expect("server error");
+    let certs = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_else(|e| panic!("Failed to parse PEM certs from {CA_CERT_PATH}: {e}"));
+
+    let mut root_store = RootCertStore::empty();
+    let (added, ignored) = root_store.add_parsable_certificates(certs);
+    if added == 0 {
+        panic!("No CA certificates were loaded from {CA_CERT_PATH}");
+    }
+
+    println!(
+        "Loaded {added} CA cert(s) from {CA_CERT_PATH} (ignored: {ignored})"
+    );
 }
