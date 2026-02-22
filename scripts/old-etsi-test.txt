@@ -1,0 +1,158 @@
+#! /bin/bash
+
+ROOT_DIR="$(git rev-parse --show-toplevel)"
+source "$ROOT_DIR/scripts/script-helpers.sh"
+
+activate_pyenv_3_12_venv
+
+THIS_DIR="$(dirname -- "$(readlink -f "$0")")"
+cd "$THIS_DIR"
+
+cleanup() {
+    local exit_code=${1:-0}
+    echo -n "Cleaning up processes... "
+    if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
+        echo -n "killing kmeserver.py (PID $SERVER_PID)... "
+        kill "$SERVER_PID"
+        wait "$SERVER_PID"
+    fi
+    echo "exited with code $exit_code"
+    exit $exit_code
+}
+trap cleanup INT TERM
+
+prompt_kill_port_processes -y "5443 5444" 
+
+python3 kmeserver.py \
+    --port-a 5443 \
+    --port-b 5444 \
+    --kme-a-cert "$CERT_DIR/kme-a.crt" \
+    --kme-a-key "$CERT_DIR/kme-a.key" \
+    --kme-b-cert "$CERT_DIR/kme-b.crt" \
+    --kme-b-key "$CERT_DIR/kme-b.key" \
+    --kme-ca-cert "$CERT_DIR/ca.crt" \
+    --log-file "$THIS_DIR/kme-log.jsonl"  >/dev/null 2>&1 &
+SERVER_PID=$!
+
+wait_for_service 127.0.0.1 5443 "KME A" 10 || cleanup
+wait_for_service 127.0.0.1 5444 "KME B" 10 || cleanup
+
+# == Client 1 ==
+# mutual authentication curl arguments
+C1="--cert $CERT_DIR/client.crt --key $CERT_DIR/client.key --cacert $CERT_DIR/ca.crt"
+# distinguished name = secure application entity identifier
+C1_DN="CN=ETSI-QKD-Client-SAE,OU=SysLab,O=IMCS UL,L=Riga,ST=Riga,C=LV"
+
+# == Client 2 ==
+# mutual authentication curl arguments
+C2="--cert $CERT_DIR/server.crt --key $CERT_DIR/server.key --cacert $CERT_DIR/ca.crt"
+# distinguished name = secure application entity identifier
+C2_DN="CN=ETSI-QKD-Peer-SAE,OU=SysLab,O=IMCS UL,L=Riga,ST=Riga,C=LV"
+
+# URL encode the distinguished names
+C1_DN_ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$C1_DN'))")
+C2_DN_ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$C2_DN'))")
+
+# == Test Status Endpoints ==
+echo -n "Testing KME A status endpoint... "
+RESPONSE=$(curl -s -w "%{http_code}" $C1 "https://localhost:5443/api/v1/keys/$C2_DN_ENCODED/status")
+HTTP_CODE="${RESPONSE: -3}"
+STATUS_RESPONSE="${RESPONSE::-3}"
+if [[ "$HTTP_CODE" != "200" ]]; then
+    echo "ERROR: Expected 200, got $HTTP_CODE"
+    echo "$STATUS_RESPONSE"
+    cleanup 1
+else
+    # Check that master_SAE_ID matches C1_DN and slave_SAE_ID matches C2_DN
+    MASTER_SAE_ID=$(echo "$STATUS_RESPONSE" | jq -r '.master_SAE_ID')
+    SLAVE_SAE_ID=$(echo "$STATUS_RESPONSE" | jq -r '.slave_SAE_ID')
+    if [[ "$MASTER_SAE_ID" != "$C1_DN" ]]; then
+        echo "ERROR: master_SAE_ID mismatch. Expected '$C1_DN', got '$MASTER_SAE_ID'"
+        cleanup 1
+    elif [[ "$SLAVE_SAE_ID" != "$C2_DN" ]]; then
+        echo "ERROR: slave_SAE_ID mismatch. Expected '$C2_DN', got '$SLAVE_SAE_ID'"
+        cleanup 1
+    else
+        echo "OK"
+    fi
+fi
+
+echo -n "Testing KME B status endpoint... "
+RESPONSE=$(curl -s -w "%{http_code}" $C2 "https://localhost:5444/api/v1/keys/$C1_DN_ENCODED/status")
+HTTP_CODE="${RESPONSE: -3}"
+STATUS_RESPONSE="${RESPONSE::-3}"
+if [[ "$HTTP_CODE" != "200" ]]; then
+    echo "ERROR: Expected 200, got $HTTP_CODE"
+    echo "$STATUS_RESPONSE"
+    cleanup 1
+else
+    # Check that master_SAE_ID matches C2_DN and slave_SAE_ID matches C1_DN
+    MASTER_SAE_ID=$(echo "$STATUS_RESPONSE" | jq -r '.master_SAE_ID')
+    SLAVE_SAE_ID=$(echo "$STATUS_RESPONSE" | jq -r '.slave_SAE_ID')
+    if [[ "$MASTER_SAE_ID" != "$C2_DN" ]]; then
+        echo "ERROR: master_SAE_ID mismatch. Expected '$C2_DN', got '$MASTER_SAE_ID'"
+        cleanup 1
+    elif [[ "$SLAVE_SAE_ID" != "$C1_DN" ]]; then
+        echo "ERROR: slave_SAE_ID mismatch. Expected '$C1_DN', got '$SLAVE_SAE_ID'"
+        cleanup 1
+    else
+        echo "OK"
+    fi
+fi
+
+echo -n "Generating 2 keys from KME A for C2 in a single request... "
+RESPONSE=$(curl -s -w "%{http_code}" $C1 -H "Content-Type: application/json" -d '{"number": 2}' "https://localhost:5443/api/v1/keys/$C2_DN_ENCODED/enc_keys") 
+HTTP_CODE="${RESPONSE: -3}"
+KEYS_RESPONSE="${RESPONSE::-3}"
+if [[ "$HTTP_CODE" != "200" ]]; then
+    echo "ERROR: Expected 200, got $HTTP_CODE"
+    echo "$KEYS_RESPONSE"
+    cleanup 1
+else 
+    echo "OK"
+fi
+KEY_ID="$(echo "$KEYS_RESPONSE" | jq -r '.keys[0].key_ID')"
+
+echo -n "Retrieving key from KME B as C1 (expecting auth error)... "
+IS_JSON="Content-Type: application/json"
+BODY="{\"key_IDs\": [{\"key_ID\": \"$KEY_ID\"}]}"
+RESPONSE=$(curl -s -w "%{http_code}" -k $C1 -H "$IS_JSON" -d "$BODY" "https://localhost:5444/api/v1/keys/$C2_DN_ENCODED/dec_keys")
+HTTP_CODE="${RESPONSE: -3}"
+OUTPUT="${RESPONSE::-3}"
+if [[ "$HTTP_CODE" == "200" ]]; then
+    echo "ERROR should have failed with authorization error"
+    cleanup 1
+elif [[ "$HTTP_CODE" == "401" ]]; then
+    echo "OK"
+else
+    echo "ERROR unknown response:"
+    echo "$OUTPUT"
+    cleanup 1
+fi
+
+echo -n "Retrieving key from KME B as C2 (should succeed)... "
+BODY="{\"key_IDs\": [{\"key_ID\": \"$KEY_ID\"}]}"
+RESPONSE=$(curl -s -w "%{http_code}" -k $C2 -H "$IS_JSON" -d "$BODY" "https://localhost:5444/api/v1/keys/$C1_DN_ENCODED/dec_keys")
+HTTP_CODE="${RESPONSE: -3}" # e.g., "200" or "401"
+OUTPUT="${RESPONSE::-3}" # everything except the last 3 chars (the body)
+if [[ "$HTTP_CODE" != "200" ]]; then
+    echo "ERROR Expected 200, got $HTTP_CODE"
+    echo "$OUTPUT"
+    cleanup 1
+else
+    echo "OK"
+fi
+
+echo -n "Retrieving key from KME B as C2 AGAIN (should fail with 401)... "
+RESPONSE=$(curl -s -w "%{http_code}" -k $C2 -H "$IS_JSON" -d "$BODY" "https://localhost:5444/api/v1/keys/$C1_DN_ENCODED/dec_keys")
+HTTP_CODE="${RESPONSE: -3}"
+OUTPUT="${RESPONSE::-3}"
+if [[ "$HTTP_CODE" != "401" ]]; then
+    echo "ERROR Expected 401, got $HTTP_CODE"
+    echo "$OUTPUT"
+    cleanup 1
+else
+    echo "OK"
+fi
+
+cleanup 0
