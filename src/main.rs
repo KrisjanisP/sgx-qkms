@@ -7,6 +7,10 @@ use std::{env, fs::File, io::BufReader, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
+use x509_parser::{
+    extensions::{GeneralName, ParsedExtension},
+    prelude::parse_x509_certificate,
+};
 
 fn load_ca_cert() -> RootCertStore {
     const CA_CERT_PATH: &str = "certs/ca/ca.crt";
@@ -51,6 +55,32 @@ fn load_private_key(path: &str) -> PrivateKeyDer<'static> {
         .unwrap_or_else(|| panic!("No private key found in {path}"))
 }
 
+fn extract_client_identity(cert: &CertificateDer<'_>) -> Option<String> {
+    let (_, parsed_cert) = parse_x509_certificate(cert.as_ref()).ok()?;
+
+    for extension in parsed_cert.extensions() {
+        if let ParsedExtension::SubjectAlternativeName(san) = extension.parsed_extension() {
+            for name in &san.general_names {
+                match name {
+                    GeneralName::DNSName(dns) => return Some(dns.to_string()),
+                    GeneralName::URI(uri) => return Some(uri.to_string()),
+                    GeneralName::RFC822Name(email) => return Some(email.to_string()),
+                    GeneralName::IPAddress(raw) if raw.len() == 4 => {
+                        return Some(std::net::Ipv4Addr::new(raw[0], raw[1], raw[2], raw[3]).to_string());
+                    }
+                    GeneralName::IPAddress(raw) if raw.len() == 16 => {
+                        let mut bytes = [0_u8; 16];
+                        bytes.copy_from_slice(raw);
+                        return Some(std::net::Ipv6Addr::from(bytes).to_string());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    None
+}
+
 async fn run_sample_server() -> Result<(), Box<dyn std::error::Error>> {
     const ADDR: &str = "127.0.0.1:8443";
     const SERVER_CERT_PATH: &str = "certs/sae/server.crt";
@@ -85,17 +115,15 @@ async fn run_sample_server() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            let mut buf = [0_u8; 1024];
-            let n = match tls_stream.read(&mut buf).await {
-                Ok(n) => n,
-                Err(e) => {
-                    eprintln!("Read failed for {peer_addr}: {e}");
-                    return;
-                }
-            };
+            let client_name = tls_stream
+                .get_ref()
+                .1
+                .peer_certificates()
+                .and_then(|certs| certs.first())
+                .and_then(extract_client_identity)
+                .unwrap_or_else(|| "stranger".to_string());
 
-            let name = String::from_utf8_lossy(&buf[..n]).trim().to_string();
-            let response = format!("hello, {name}\n");
+            let response = format!("hello, {client_name}\n");
             if let Err(e) = tls_stream.write_all(response.as_bytes()).await {
                 eprintln!("Write failed for {peer_addr}: {e}");
                 return;
@@ -105,12 +133,12 @@ async fn run_sample_server() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             }
 
-            println!("served greeting for '{name}' from {peer_addr}");
+            println!("served greeting for '{client_name}' from {peer_addr}");
         });
     }
 }
 
-async fn run_sample_client(name: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_sample_client() -> Result<(), Box<dyn std::error::Error>> {
     const ADDR: &str = "127.0.0.1:8443";
     const CLIENT_CERT_PATH: &str = "certs/sae/client.crt";
     const CLIENT_KEY_PATH: &str = "certs/sae/client.key";
@@ -127,9 +155,6 @@ async fn run_sample_client(name: &str) -> Result<(), Box<dyn std::error::Error>>
     let tcp_stream = TcpStream::connect(ADDR).await?;
     let server_name = ServerName::try_from("localhost")?;
     let mut tls_stream = connector.connect(server_name, tcp_stream).await?;
-
-    tls_stream.write_all(format!("{name}\n").as_bytes()).await?;
-    tls_stream.shutdown().await?;
 
     let mut response = Vec::new();
     tls_stream.read_to_end(&mut response).await?;
@@ -152,8 +177,7 @@ async fn main() {
             }
         }
         Some("client") => {
-            let name = args.next().unwrap_or_else(|| "world".to_string());
-            if let Err(e) = run_sample_client(&name).await {
+            if let Err(e) = run_sample_client().await {
                 eprintln!("client error: {e}");
                 std::process::exit(1);
             }
@@ -161,7 +185,7 @@ async fn main() {
         _ => {
             eprintln!("Usage:");
             eprintln!("  sgx-qkms server");
-            eprintln!("  sgx-qkms client <name>");
+            eprintln!("  sgx-qkms client");
             std::process::exit(1);
         }
     }

@@ -25,6 +25,6 @@ while ! grep -q "listening" logs/server.txt; do
     sleep 0.1
 done
 
-cargo run -- client "world" 2>&1 | tee logs/client.txt 
+cargo run -- client 2>&1 | tee logs/client.txt 
 
 kill "$SERVER_PID"
