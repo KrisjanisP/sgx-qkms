@@ -1,4 +1,4 @@
-use axum::{extract::Extension, routing::get};
+use hyper::service::Service;
 use hyper::{Request, body::Incoming, server::conn::http1, service::service_fn};
 use hyper_util::rt::TokioIo;
 use rustls::{
@@ -11,7 +11,6 @@ use std::{convert::Infallible, env, fs::File, io::BufReader, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
-use tower::ServiceExt;
 use x509_parser::{
     extensions::{GeneralName, ParsedExtension},
     prelude::parse_x509_certificate,
@@ -89,13 +88,6 @@ fn extract_client_identity(cert: &CertificateDer<'_>) -> Option<String> {
     None
 }
 
-#[derive(Clone)]
-struct ClientIdentity(String);
-
-async fn hello_handler(Extension(client_identity): Extension<ClientIdentity>) -> String {
-    format!("hello, {}", client_identity.0)
-}
-
 async fn run_sample_server() -> Result<(), Box<dyn std::error::Error>> {
     const ADDR: &str = "127.0.0.1:8443";
     const SERVER_CERT_PATH: &str = "certs/sae/server.crt";
@@ -113,8 +105,11 @@ async fn run_sample_server() -> Result<(), Box<dyn std::error::Error>> {
 
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
     let listener = TcpListener::bind(ADDR).await?;
-    let etsi_handler = Arc::new(etsi014_handler::Etsi014Handler);
-    let app = qkd014_server_gen::server::new(etsi_handler).route("/hello", get(hello_handler));
+    let api_service =
+        qkd014_server_gen::server::Service::<
+            etsi014_handler::Etsi014Handler,
+            etsi014_handler::RequestContext,
+        >::new(etsi014_handler::Etsi014Handler, false);
     println!("sample mTLS server listening on {ADDR}");
 
     loop {
@@ -123,7 +118,7 @@ async fn run_sample_server() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => return Err(e.into()),
         };
         let acceptor = acceptor.clone();
-        let app = app.clone();
+        let api_service = api_service.clone();
 
         tokio::spawn(async move {
             let tls_stream = match acceptor.accept(tcp_stream).await {
@@ -143,13 +138,15 @@ async fn run_sample_server() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|| "stranger".to_string());
             let client_name_for_service = client_name.clone();
 
-            let service = service_fn(move |mut req: Request<Incoming>| {
-                let app = app.clone();
-                let identity = ClientIdentity(client_name_for_service.clone());
+            let service = service_fn(move |req: Request<Incoming>| {
+                let mut api_service = api_service.clone();
+                let context =
+                    etsi014_handler::RequestContext::new(client_name_for_service.clone());
                 async move {
-                    req.extensions_mut().insert(identity);
-                    let req = req.map(axum::body::Body::new);
-                    let response = app.oneshot(req).await.expect("router is infallible");
+                    let response = api_service
+                        .call((req, context))
+                        .await
+                        .expect("generated service failed");
                     Ok::<_, Infallible>(response)
                 }
             });
