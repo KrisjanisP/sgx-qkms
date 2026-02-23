@@ -174,7 +174,8 @@ async fn run_sample_client() -> Result<(), Box<dyn std::error::Error>> {
     let client_cert_chain = load_certs(CLIENT_CERT_PATH);
     let client_key = load_private_key(CLIENT_KEY_PATH);
 
-    let client_config = ClientConfig::builder()
+    let client_config = ClientConfig::builder_with_provider(Arc::new(mbedtls_crypto_provider()))
+        .with_protocol_versions(&[&rustls::version::TLS13])?
         .with_root_certificates(ca_cert_store)
         .with_client_auth_cert(client_cert_chain, client_key)?;
 
