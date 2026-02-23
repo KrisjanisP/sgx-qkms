@@ -1,4 +1,4 @@
-use axum::{Router, extract::Extension, routing::get};
+use axum::{extract::Extension, routing::get};
 use hyper::{Request, body::Incoming, server::conn::http1, service::service_fn};
 use hyper_util::rt::TokioIo;
 use rustls::{
@@ -16,6 +16,7 @@ use x509_parser::{
     extensions::{GeneralName, ParsedExtension},
     prelude::parse_x509_certificate,
 };
+mod etsi014_handler;
 
 fn load_ca_cert() -> RootCertStore {
     const CA_CERT_PATH: &str = "certs/ca/ca.crt";
@@ -112,7 +113,8 @@ async fn run_sample_server() -> Result<(), Box<dyn std::error::Error>> {
 
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
     let listener = TcpListener::bind(ADDR).await?;
-    let app = Router::new().route("/hello", get(hello_handler));
+    let etsi_handler = Arc::new(etsi014_handler::Etsi014Handler);
+    let app = qkd014_server_gen::server::new(etsi_handler).route("/hello", get(hello_handler));
     println!("sample mTLS server listening on {ADDR}");
 
     loop {
