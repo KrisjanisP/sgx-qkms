@@ -6,6 +6,7 @@ use rustls::{
     pki_types::{CertificateDer, PrivateKeyDer, ServerName},
     server::WebPkiClientVerifier,
 };
+use rustls_mbedcrypto_provider::mbedtls_crypto_provider;
 use std::{convert::Infallible, env, fs::File, io::BufReader, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -70,7 +71,9 @@ fn extract_client_identity(cert: &CertificateDer<'_>) -> Option<String> {
                     GeneralName::URI(uri) => return Some(uri.to_string()),
                     GeneralName::RFC822Name(email) => return Some(email.to_string()),
                     GeneralName::IPAddress(raw) if raw.len() == 4 => {
-                        return Some(std::net::Ipv4Addr::new(raw[0], raw[1], raw[2], raw[3]).to_string());
+                        return Some(
+                            std::net::Ipv4Addr::new(raw[0], raw[1], raw[2], raw[3]).to_string(),
+                        );
                     }
                     GeneralName::IPAddress(raw) if raw.len() == 16 => {
                         let mut bytes = [0_u8; 16];
@@ -102,7 +105,8 @@ async fn run_sample_server() -> Result<(), Box<dyn std::error::Error>> {
     let server_key = load_private_key(SERVER_KEY_PATH);
 
     let client_verifier = WebPkiClientVerifier::builder(Arc::new(ca_cert_store)).build()?;
-    let server_config = ServerConfig::builder()
+    let server_config = ServerConfig::builder_with_provider(Arc::new(mbedtls_crypto_provider()))
+        .with_protocol_versions(&[&rustls::version::TLS13])?
         .with_client_cert_verifier(client_verifier)
         .with_single_cert(server_cert_chain, server_key)?;
 
