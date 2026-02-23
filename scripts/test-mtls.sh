@@ -1,6 +1,6 @@
 #! /bin/bash
 
-set -ex # exit on error, print commands
+set -e # exit on error
 
 if [ -d logs ]; then
     if [ -d logs.bkp ]; then
