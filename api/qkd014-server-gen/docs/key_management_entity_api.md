@@ -66,8 +66,8 @@ Optional parameters are passed through a map[string]interface{}.
 Name | Type | Description  | Notes
 ------------- | ------------- | ------------- | -------------
  **slave_sae_id** | **String**| URL-encoded SAE ID of slave SAE | 
- **number** | **u32**| Number of keys requested (default 1) | 
- **size** | **u32**| Size of each key in bits (default is key_size from Status). Some KMEs require a multiple of 8 and may return 400 with message \"size shall be a multiple of 8\".  | 
+ **number** | **i32**| Number of keys requested (default 1) | 
+ **size** | **i32**| Size of each key in bits (default is key_size from Status). Some KMEs require a multiple of 8 and may return 400 with message \"size shall be a multiple of 8\".  | 
 
 ### Return type
 

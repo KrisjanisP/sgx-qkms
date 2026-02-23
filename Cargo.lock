@@ -2712,10 +2712,12 @@ dependencies = [
  "rustls-mbedcrypto-provider",
  "rustls-pemfile",
  "serde",
+ "swagger",
  "tokio",
  "tokio-rustls",
  "toml",
  "tower",
+ "uuid",
  "x509-parser",
 ]
 

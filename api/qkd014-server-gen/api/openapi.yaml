@@ -85,7 +85,7 @@ paths:
         name: number
         required: false
         schema:
-          minimum: 1
+          format: int32
           type: integer
         style: form
       - description: |
@@ -96,7 +96,7 @@ paths:
         name: size
         required: false
         schema:
-          minimum: 1
+          format: int32
           type: integer
         style: form
       responses:
@@ -294,7 +294,7 @@ components:
       name: number
       required: false
       schema:
-        minimum: 1
+        format: int32
         type: integer
       style: form
     Size:
@@ -306,7 +306,7 @@ components:
       name: size
       required: false
       schema:
-        minimum: 1
+        format: int32
         type: integer
       style: form
     KeyId:
@@ -381,11 +381,11 @@ components:
         All fields are optional; the JSON body may be empty.
         GET is only permitted for empty request or only number/size (as query params).
       example:
-        number: 1
+        number: 0
         additional_slave_SAE_IDs:
         - additional_slave_SAE_IDs
         - additional_slave_SAE_IDs
-        size: 1
+        size: 6
         extension_optional:
         - key: ""
         - key: ""
@@ -395,11 +395,11 @@ components:
       properties:
         number:
           description: Number of keys requested (default 1)
-          minimum: 1
+          format: int32
           type: integer
         size:
           description: Size of each key in bits (default key_size from Status)
-          minimum: 1
+          format: int32
           type: integer
         additional_slave_SAE_IDs:
           description: Optional list of additional slave SAE IDs for key multicast

@@ -579,8 +579,8 @@ impl<S, C, B> Api<C> for Client<S, C> where
     async fn get_key_simple(
         &self,
         param_slave_sae_id: String,
-        param_number: Option<u32>,
-        param_size: Option<u32>,
+        param_number: Option<i32>,
+        param_size: Option<i32>,
         context: &C) -> Result<GetKeySimpleResponse, ApiError>
     {
         let mut client_service = self.client_service.clone();

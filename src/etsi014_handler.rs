@@ -58,8 +58,8 @@ impl Api<RequestContext> for Etsi014Handler {
     async fn get_key_simple(
         &self,
         _slave_sae_id: String,
-        _number: Option<u32>,
-        _size: Option<u32>,
+        _number: Option<i32>,
+        _size: Option<i32>,
         _context: &RequestContext,
     ) -> Result<GetKeySimpleResponse, ApiError> {
         Ok(GetKeySimpleResponse::ErrorOnServerSide(

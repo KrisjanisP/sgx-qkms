@@ -21,6 +21,8 @@ hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 tower = { version = "0.5", features = ["util"] }
 rustls-mbedcrypto-provider = "0.1.1"
+swagger = "7.0.0"
+uuid = "1.21.0"
 
 [workspace]
 members = ["api/qkd014-server-gen"]

@@ -872,23 +872,15 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
 pub struct KeyRequest {
     /// Number of keys requested (default 1)
     #[serde(rename = "number")]
-    #[cfg_attr(not(feature = "validate"), validate(
-            range(min = 1u32),
-        ))]
-    #[cfg_attr(feature = "validate", validate(minimum = 1u32))]
 
     #[serde(skip_serializing_if="Option::is_none")]
-    pub number: Option<u32>,
+    pub number: Option<i32>,
 
     /// Size of each key in bits (default key_size from Status)
     #[serde(rename = "size")]
-    #[cfg_attr(not(feature = "validate"), validate(
-            range(min = 1u32),
-        ))]
-    #[cfg_attr(feature = "validate", validate(minimum = 1u32))]
 
     #[serde(skip_serializing_if="Option::is_none")]
-    pub size: Option<u32>,
+    pub size: Option<i32>,
 
     /// Optional list of additional slave SAE IDs for key multicast
     #[serde(rename = "additional_slave_SAE_IDs")]
@@ -967,8 +959,8 @@ impl std::str::FromStr for KeyRequest {
         #[derive(Default)]
         #[allow(dead_code)]
         struct IntermediateRep {
-            pub number: Vec<u32>,
-            pub size: Vec<u32>,
+            pub number: Vec<i32>,
+            pub size: Vec<i32>,
             pub additional_slave_sae_ids: Vec<Vec<String>>,
             pub extension_mandatory: Vec<Vec<std::collections::HashMap<String, serde_json::Value>>>,
             pub extension_optional: Vec<Vec<std::collections::HashMap<String, serde_json::Value>>>,
@@ -990,9 +982,9 @@ impl std::str::FromStr for KeyRequest {
                 #[allow(clippy::match_single_binding)]
                 match key {
                     #[allow(clippy::redundant_clone)]
-                    "number" => intermediate_rep.number.push(<u32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
+                    "number" => intermediate_rep.number.push(<i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
                     #[allow(clippy::redundant_clone)]
-                    "size" => intermediate_rep.size.push(<u32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
+                    "size" => intermediate_rep.size.push(<i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
                     "additional_slave_SAE_IDs" => return std::result::Result::Err("Parsing a container in this style is not supported in KeyRequest".to_string()),
                     "extension_mandatory" => return std::result::Result::Err("Parsing a container in this style is not supported in KeyRequest".to_string()),
                     "extension_optional" => return std::result::Result::Err("Parsing a container in this style is not supported in KeyRequest".to_string()),

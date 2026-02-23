@@ -233,7 +233,7 @@ components:
       description: Number of keys requested (default 1)
       schema:
         type: integer
-        minimum: 1
+        format: int32
 
     Size:
       name: size
@@ -244,7 +244,7 @@ components:
         Some KMEs require a multiple of 8 and may return 400 with message "size shall be a multiple of 8".
       schema:
         type: integer
-        minimum: 1
+        format: int32
 
     KeyId:
       name: key_ID
@@ -307,11 +307,11 @@ components:
       properties:
         number:
           type: integer
-          minimum: 1
+          format: int32
           description: Number of keys requested (default 1)
         size:
           type: integer
-          minimum: 1
+          format: int32
           description: Size of each key in bits (default key_size from Status)
         additional_slave_SAE_IDs:
           type: array

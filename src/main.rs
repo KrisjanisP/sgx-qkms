@@ -139,7 +139,7 @@ async fn run_sample_server() -> Result<(), Box<dyn std::error::Error>> {
             let client_name_for_service = client_name.clone();
 
             let service = service_fn(move |req: Request<Incoming>| {
-                let mut api_service = api_service.clone();
+                let api_service = api_service.clone();
                 let context =
                     etsi014_handler::RequestContext::new(client_name_for_service.clone());
                 async move {

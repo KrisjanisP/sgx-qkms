@@ -73,9 +73,9 @@ enum Operation {
         /// URL-encoded SAE ID of slave SAE
         slave_sae_id: String,
         /// Number of keys requested (default 1)
-        number: Option<u32>,
+        number: Option<i32>,
         /// Size of each key in bits (default is key_size from Status). Some KMEs require a multiple of 8 and may return 400 with message \"size shall be a multiple of 8\". 
-        size: Option<u32>,
+        size: Option<i32>,
     },
     /// Get keys with key IDs
     GetKeyWithIds {

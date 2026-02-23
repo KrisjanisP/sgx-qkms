@@ -165,8 +165,8 @@ impl<C> Api<C> for Server<C> where C: Has<XSpanIdString> + Send + Sync
     async fn get_key_simple(
         &self,
         slave_sae_id: String,
-        number: Option<u32>,
-        size: Option<u32>,
+        number: Option<i32>,
+        size: Option<i32>,
         context: &C) -> Result<GetKeySimpleResponse, ApiError>
     {
         info!("get_key_simple(\"{}\", {:?}, {:?}) - X-Span-ID: {:?}", slave_sae_id, number, size, context.get().0.clone());

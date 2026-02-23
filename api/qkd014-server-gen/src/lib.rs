@@ -132,8 +132,8 @@ pub trait Api<C: Send + Sync> {
     async fn get_key_simple(
         &self,
         slave_sae_id: String,
-        number: Option<u32>,
-        size: Option<u32>,
+        number: Option<i32>,
+        size: Option<i32>,
         context: &C) -> Result<GetKeySimpleResponse, ApiError>;
 
     /// Get keys with key IDs
@@ -181,8 +181,8 @@ pub trait ApiNoContext<C: Send + Sync> {
     async fn get_key_simple(
         &self,
         slave_sae_id: String,
-        number: Option<u32>,
-        size: Option<u32>,
+        number: Option<i32>,
+        size: Option<i32>,
         ) -> Result<GetKeySimpleResponse, ApiError>;
 
     /// Get keys with key IDs
@@ -241,8 +241,8 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     async fn get_key_simple(
         &self,
         slave_sae_id: String,
-        number: Option<u32>,
-        size: Option<u32>,
+        number: Option<i32>,
+        size: Option<i32>,
         ) -> Result<GetKeySimpleResponse, ApiError>
     {
         let context = self.context().clone();
