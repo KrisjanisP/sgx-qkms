@@ -48,25 +48,55 @@ impl HttpResponse {
 
 pub fn read_http_request(stream: &mut impl Read) -> Result<Vec<u8>, Box<dyn Error>> {
     const MAX_HEADER_BYTES: usize = 64 * 1024;
+    const MAX_BODY_BYTES: usize = 1024 * 1024;
     let mut buf = Vec::with_capacity(2048);
     let mut chunk = [0_u8; 1024];
 
-    loop {
+    let header_end = loop {
         let n = stream.read(&mut chunk)?;
         if n == 0 {
-            break;
+            break buf.len();
         }
         buf.extend_from_slice(&chunk[..n]);
 
-        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-            break;
+        if let Some(pos) = find_header_end(&buf) {
+            break pos;
         }
         if buf.len() > MAX_HEADER_BYTES {
             return Err("request headers too large".into());
         }
+    };
+
+    let body_start = header_end + 4; // skip \r\n\r\n
+    if let Some(content_length) = extract_content_length(&buf[..header_end]) {
+        if content_length > MAX_BODY_BYTES {
+            return Err("request body too large".into());
+        }
+        let total_needed = body_start + content_length;
+        while buf.len() < total_needed {
+            let n = stream.read(&mut chunk)?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
     }
 
     Ok(buf)
+}
+
+fn find_header_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|w| w == b"\r\n\r\n")
+}
+
+fn extract_content_length(header_bytes: &[u8]) -> Option<usize> {
+    let header_str = std::str::from_utf8(header_bytes).ok()?;
+    for line in header_str.lines() {
+        if let Some(val) = line.strip_prefix("Content-Length:").or_else(|| line.strip_prefix("content-length:")) {
+            return val.trim().parse().ok();
+        }
+    }
+    None
 }
 
 pub fn parse_http_request(raw: &[u8]) -> Result<ParsedRequest, Box<dyn Error>> {

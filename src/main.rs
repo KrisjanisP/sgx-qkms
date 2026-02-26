@@ -21,6 +21,9 @@ use x509_parser::{
 struct EmbeddedAssets;
 
 mod api_models;
+mod enrollment_client;
+mod enrollment_models;
+mod enrollment_service;
 mod etsi014_handler;
 mod etsi014_poller;
 mod http_protocol;
@@ -338,7 +341,7 @@ fn main() {
 
     match mode {
         Some("kme") => {
-            let gather_config = parse_gather_flag(&args[2..]);
+            let gather_config = parse_named_arg(&args[2..], "--gather");
             if let Err(e) = run_sample_server(gather_config) {
                 eprintln!("kme error: {e}");
                 std::process::exit(1);
@@ -356,21 +359,59 @@ fn main() {
         Some("ca-info") => {
             print_ca_info();
         }
+        Some("enroll-service") => {
+            let rest = &args[2..];
+            let ca_cert = parse_named_arg(rest, "--ca-cert")
+                .unwrap_or("certs/ca/ca.crt");
+            let ca_key = parse_named_arg(rest, "--ca-key")
+                .unwrap_or("certs/ca/ca.key");
+            let server_cert = parse_named_arg(rest, "--server-cert")
+                .unwrap_or(ca_cert);
+            let server_key = parse_named_arg(rest, "--server-key")
+                .unwrap_or(ca_key);
+            let addr = parse_named_arg(rest, "--addr")
+                .unwrap_or("0.0.0.0:8444");
+            if let Err(e) = enrollment_service::run(addr, server_cert, server_key, ca_cert, ca_key) {
+                eprintln!("enroll-service error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some("enroll") => {
+            let rest = &args[2..];
+            let node_id = parse_named_arg(rest, "--node-id")
+                .expect("--node-id is required");
+            let ra_host = parse_named_arg(rest, "--ra-host")
+                .unwrap_or("localhost");
+            let ra_port: u16 = parse_named_arg(rest, "--ra-port")
+                .unwrap_or("8444")
+                .parse()
+                .expect("--ra-port must be a number");
+            let out_cert = parse_named_arg(rest, "--out-cert")
+                .unwrap_or("enrolled.crt");
+            let out_key = parse_named_arg(rest, "--out-key")
+                .unwrap_or("enrolled.key");
+            if let Err(e) = enrollment_client::run(node_id, ra_host, ra_port, out_cert, out_key) {
+                eprintln!("enroll error: {e}");
+                std::process::exit(1);
+            }
+        }
         _ => {
             eprintln!("Usage:");
             eprintln!("  sgx-qkms kme [--gather <config.toml>]");
             eprintln!("  sgx-qkms sae-status-req");
             eprintln!("  sgx-qkms attestation-report");
             eprintln!("  sgx-qkms ca-info");
+            eprintln!("  sgx-qkms enroll-service [--ca-cert <path>] [--ca-key <path>] [--addr <host:port>]");
+            eprintln!("  sgx-qkms enroll --node-id <id> [--ra-host <host>] [--ra-port <port>] [--out-cert <path>] [--out-key <path>]");
             std::process::exit(1);
         }
     }
 }
 
-fn parse_gather_flag(args: &[String]) -> Option<&str> {
+fn parse_named_arg<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
-        if arg == "--gather" {
+        if arg == name {
             return iter.next().map(String::as_str);
         }
     }
