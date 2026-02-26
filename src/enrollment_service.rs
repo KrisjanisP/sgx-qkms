@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::error::Error;
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use rcgen::KeyPair;
@@ -34,17 +35,34 @@ struct PendingEnrollment {
 
 type EnrollStore = Arc<Mutex<HashMap<String, PendingEnrollment>>>;
 
+type ApprovalSender = Option<mpsc::Sender<(String, String)>>;
+
 pub fn run(
     addr: &str,
     server_cert_path: &str,
     server_key_path: &str,
     ca_cert_path: &str,
     ca_key_path: &str,
+    interactive: bool,
 ) -> Result<(), Box<dyn Error>> {
+    crate::print_cert_info("CA cert", ca_cert_path);
+    crate::print_cert_info("Server cert", server_cert_path);
+
     let store: EnrollStore = Arc::new(Mutex::new(HashMap::new()));
     let ca_cert_pem = std::fs::read_to_string(ca_cert_path)?;
     let ca_key_pem = std::fs::read_to_string(ca_key_path)?;
     let ca_material = Arc::new(CaMaterial { ca_cert_pem, ca_key_pem });
+
+    let approval_tx: ApprovalSender = if interactive {
+        let (tx, rx) = mpsc::channel::<(String, String)>();
+        let istore = store.clone();
+        let ica = ca_material.clone();
+        std::thread::spawn(move || interactive_approval_loop(rx, &istore, &ica));
+        println!("enroll-service: interactive mode enabled (approve/reject via stdin)");
+        Some(tx)
+    } else {
+        None
+    };
 
     let server_cert_chain = load_certs(server_cert_path);
     let server_key = load_private_key(server_key_path);
@@ -66,9 +84,10 @@ pub fn run(
         let server_config = server_config.clone();
         let store = store.clone();
         let ca_material = ca_material.clone();
+        let approval_tx = approval_tx.clone();
 
         std::thread::spawn(move || {
-            if let Err(e) = handle_connection(tcp_stream, server_config, &store, &ca_material) {
+            if let Err(e) = handle_connection(tcp_stream, server_config, &store, &ca_material, &approval_tx) {
                 eprintln!("enroll-service: failed for {peer_addr}: {e}");
             }
         });
@@ -80,11 +99,68 @@ struct CaMaterial {
     ca_key_pem: String,
 }
 
+fn interactive_approval_loop(
+    rx: mpsc::Receiver<(String, String)>,
+    store: &EnrollStore,
+    ca: &CaMaterial,
+) {
+    let stdin = std::io::stdin();
+    for (id, node_id) in rx {
+        println!();
+        println!(">>> Enrollment request: id={id}, node={node_id}");
+        print!(">>> Approve? [y/n]: ");
+        let _ = std::io::stdout().flush();
+
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line).is_err() {
+            eprintln!("enroll-service: failed to read stdin");
+            continue;
+        }
+
+        match line.trim() {
+            "y" | "Y" | "yes" => {
+                let csr_pem = {
+                    let enrollments = store.lock().unwrap();
+                    match enrollments.get(&id) {
+                        Some(e) => e.csr_pem.clone(),
+                        None => {
+                            eprintln!("enroll-service: enrollment {id} not found");
+                            continue;
+                        }
+                    }
+                };
+
+                match sign_csr(&csr_pem, ca) {
+                    Ok(cert_pem) => {
+                        let mut enrollments = store.lock().unwrap();
+                        if let Some(e) = enrollments.get_mut(&id) {
+                            e.status = Status::Approved;
+                            e.certificate_pem = Some(cert_pem);
+                        }
+                        println!("enroll-service: approved enrollment {id}");
+                    }
+                    Err(e) => {
+                        eprintln!("enroll-service: signing failed for {id}: {e}");
+                    }
+                }
+            }
+            _ => {
+                let mut enrollments = store.lock().unwrap();
+                if let Some(e) = enrollments.get_mut(&id) {
+                    e.status = Status::Rejected;
+                }
+                println!("enroll-service: rejected enrollment {id}");
+            }
+        }
+    }
+}
+
 fn handle_connection(
     mut tcp_stream: TcpStream,
     server_config: Arc<ServerConfig>,
     store: &EnrollStore,
     ca: &CaMaterial,
+    approval_tx: &ApprovalSender,
 ) -> Result<(), Box<dyn Error>> {
     let mut server_conn = ServerConnection::new(server_config)?;
     while server_conn.is_handshaking() {
@@ -94,15 +170,15 @@ fn handle_connection(
     let mut tls_stream = StreamOwned::new(server_conn, tcp_stream);
     let raw = http_protocol::read_http_request(&mut tls_stream)?;
     let parsed = http_protocol::parse_http_request(&raw)?;
-    let response = route_request(&parsed, store, ca);
+    let response = route_request(&parsed, store, ca, approval_tx);
     tls_stream.write_all(&response.to_http_bytes())?;
     tls_stream.flush()?;
     Ok(())
 }
 
-fn route_request(request: &ParsedRequest, store: &EnrollStore, ca: &CaMaterial) -> HttpResponse {
+fn route_request(request: &ParsedRequest, store: &EnrollStore, ca: &CaMaterial, approval_tx: &ApprovalSender) -> HttpResponse {
     match (&request.method, request.path.as_str()) {
-        (HttpMethod::Post, "/enroll") => handle_enroll(request, store),
+        (HttpMethod::Post, "/enroll") => handle_enroll(request, store, approval_tx),
         (HttpMethod::Post, path) if path.ends_with("/approve") => {
             if let Some(id) = path
                 .strip_prefix("/enroll/")
@@ -121,7 +197,7 @@ fn route_request(request: &ParsedRequest, store: &EnrollStore, ca: &CaMaterial) 
     }
 }
 
-fn handle_enroll(request: &ParsedRequest, store: &EnrollStore) -> HttpResponse {
+fn handle_enroll(request: &ParsedRequest, store: &EnrollStore, approval_tx: &ApprovalSender) -> HttpResponse {
     let body = match &request.body {
         Some(b) => b,
         None => return json_error(400, "missing request body"),
@@ -138,8 +214,9 @@ fn handle_enroll(request: &ParsedRequest, store: &EnrollStore) -> HttpResponse {
     }
 
     let id = uuid::Uuid::new_v4().to_string();
+    let node_id = req.node_id.clone();
 
-    println!("enroll-service: enrollment request {id} for node '{}'", req.node_id);
+    println!("enroll-service: enrollment request {id} for node '{node_id}'");
     if req.quote.is_empty() {
         println!("enroll-service: WARNING: empty quote (non-SGX testing mode)");
     } else {
@@ -157,6 +234,10 @@ fn handle_enroll(request: &ParsedRequest, store: &EnrollStore) -> HttpResponse {
     };
 
     store.lock().unwrap().insert(id.clone(), enrollment);
+
+    if let Some(tx) = approval_tx {
+        let _ = tx.send((id.clone(), node_id));
+    }
 
     let resp = EnrollResponse {
         id,

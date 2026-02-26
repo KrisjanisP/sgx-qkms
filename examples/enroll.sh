@@ -7,12 +7,12 @@
 #   - Server certificate (signed by the CA) for the enrollment service
 #
 # Terminal 1: Start the enrollment service (RA/CA)
-#   cargo run -- enroll-service \
+#   cargo run -- enroll-service --interactive \
 #     --ca-cert certs/ca/ca.crt \
 #     --ca-key certs/ca/ca.key \
-#     --server-cert certs/sae/server.crt \
-#     --server-key certs/sae/server.key \
 #     --addr 0.0.0.0:8444
+#
+#   (without --interactive, approve manually via curl)
 #
 # Terminal 2: Run this script to enroll a node
 #   bash examples/enroll.sh

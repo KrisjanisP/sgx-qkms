@@ -18,11 +18,12 @@ mkdir -p "$CA_DIR" "$KME_DIR" "$SAE_DIR"
 ###############################################################################
 # variables
 days=365
-CN_CA="ETSI-QKD-Root-CA"
-CN_SERVER="ETSI-QKD-Peer-SAE"
-CN_CLIENT="ETSI-QKD-Client-SAE"
-CN_KME_A="ETSI-QKD-KME-A"
-CN_KME_B="ETSI-QKD-KME-B"
+CN_CA="root-ca"
+CN_SERVER="ETSI-Peer-SAE"
+CN_CLIENT="ETSI-Client-SAE"
+CN_KME_A="KME-A"
+CN_KME_B="KME-B"
+CN_ENROLL="enrollment-service"
 SUBJ_PREFIX="/C=LV/ST=Riga/L=Riga/O=IMCS UL/OU=SysLab"
 
 ###############################################################################
@@ -129,7 +130,31 @@ openssl x509 -req -in "$KME_DIR/kme-b.csr" -CA "$CA_DIR/ca.crt" -CAkey "$CA_DIR/
 # rm "$KME_DIR/kme-b.csr" "$KME_DIR/kme-b.ext"
 
 ###############################################################################
-# 6) PKCS#12 KEYSTORES AND TRUSTSTORE
+# 6) ENROLLMENT SERVICE CERT
+###############################################################################
+ENROLL_DIR="$CERT_DIR/enroll"
+mkdir -p "$ENROLL_DIR"
+
+openssl req -new -newkey rsa:4096 -nodes -sha256 \
+    -subj "$SUBJ_PREFIX/CN=$CN_ENROLL" \
+    -keyout "$ENROLL_DIR/enroll.key" -out "$ENROLL_DIR/enroll.csr"
+
+cat > "$ENROLL_DIR/enroll.ext" << EOF
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = $CN_ENROLL
+DNS.2 = localhost
+IP.1 = 127.0.0.1
+IP.2 = ::1
+EOF
+
+openssl x509 -req -in "$ENROLL_DIR/enroll.csr" -CA "$CA_DIR/ca.crt" -CAkey "$CA_DIR/ca.key" \
+    -CAcreateserial -out "$ENROLL_DIR/enroll.crt" -days "$days" -sha256 \
+    -extfile "$ENROLL_DIR/enroll.ext"
+
+###############################################################################
+# 7) PKCS#12 KEYSTORES AND TRUSTSTORE
 ###############################################################################
 # 6. Create PKCS#12 keystores and truststores (Java-friendly format)
 KEYSTORE_PASSWORD="changeit"

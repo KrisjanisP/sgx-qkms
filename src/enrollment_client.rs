@@ -21,6 +21,7 @@ pub fn run(
     out_cert: &str,
     out_key: &str,
 ) -> Result<(), Box<dyn Error>> {
+    print_embedded_ca_info();
     println!("enroll: generating ECDSA P-256 key pair...");
     let key_pair = KeyPair::generate()?;
     let key_pem = key_pair.serialize_pem();
@@ -185,4 +186,23 @@ fn read_response_body(stream: &mut impl Read) -> Result<String, Box<dyn Error>> 
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn print_embedded_ca_info() {
+    use x509_parser::prelude::parse_x509_certificate;
+
+    let pem = crate::EmbeddedAssets::get("ca.crt").expect("ca.crt not found in embedded assets");
+    let certs = rustls_pemfile::certs(&mut &*pem.data)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("failed to parse embedded CA PEM");
+
+    for cert_der in &certs {
+        let (_, cert) = parse_x509_certificate(cert_der.as_ref())
+            .expect("failed to parse embedded CA certificate");
+        println!(
+            "enroll: trusted CA: subject={}, not_after={}",
+            cert.subject(),
+            cert.validity().not_after
+        );
+    }
 }

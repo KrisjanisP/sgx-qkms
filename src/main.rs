@@ -86,6 +86,16 @@ fn load_private_key(path: &str) -> PrivateKeyDer<'static> {
         .unwrap_or_else(|| panic!("No private key found in {path}"))
 }
 
+pub fn print_cert_info(label: &str, cert_path: &str) {
+    let certs = load_certs(cert_path);
+    for cert_der in &certs {
+        let (_, cert) = parse_x509_certificate(cert_der.as_ref())
+            .expect("failed to parse certificate");
+        println!("{label}: subject={}, not_after={}",
+            cert.subject(), cert.validity().not_after);
+    }
+}
+
 fn extract_client_identity(cert: &CertificateDer<'_>) -> Option<String> {
     let (_, parsed_cert) = parse_x509_certificate(cert.as_ref()).ok()?;
 
@@ -366,12 +376,13 @@ fn main() {
             let ca_key = parse_named_arg(rest, "--ca-key")
                 .unwrap_or("certs/ca/ca.key");
             let server_cert = parse_named_arg(rest, "--server-cert")
-                .unwrap_or(ca_cert);
+                .unwrap_or("certs/enroll/enroll.crt");
             let server_key = parse_named_arg(rest, "--server-key")
-                .unwrap_or(ca_key);
+                .unwrap_or("certs/enroll/enroll.key");
             let addr = parse_named_arg(rest, "--addr")
                 .unwrap_or("0.0.0.0:8444");
-            if let Err(e) = enrollment_service::run(addr, server_cert, server_key, ca_cert, ca_key) {
+            let interactive = has_flag(rest, "--interactive");
+            if let Err(e) = enrollment_service::run(addr, server_cert, server_key, ca_cert, ca_key, interactive) {
                 eprintln!("enroll-service error: {e}");
                 std::process::exit(1);
             }
@@ -401,7 +412,7 @@ fn main() {
             eprintln!("  sgx-qkms sae-status-req");
             eprintln!("  sgx-qkms attestation-report");
             eprintln!("  sgx-qkms ca-info");
-            eprintln!("  sgx-qkms enroll-service [--ca-cert <path>] [--ca-key <path>] [--addr <host:port>]");
+            eprintln!("  sgx-qkms enroll-service [--ca-cert <path>] [--ca-key <path>] [--addr <host:port>] [--interactive]");
             eprintln!("  sgx-qkms enroll --node-id <id> [--ra-host <host>] [--ra-port <port>] [--out-cert <path>] [--out-key <path>]");
             std::process::exit(1);
         }
@@ -416,4 +427,8 @@ fn parse_named_arg<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
         }
     }
     None
+}
+
+fn has_flag(args: &[String], name: &str) -> bool {
+    args.iter().any(|a| a == name)
 }
