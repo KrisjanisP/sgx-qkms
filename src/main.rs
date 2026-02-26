@@ -415,7 +415,7 @@ fn main() {
             let rest = &args[2..];
             let gather_config = parse_named_arg(rest, "--gather");
             let blob_store = parse_named_arg(rest, "--blob-store")
-                .expect("--blob-store is required");
+                .unwrap_or("localhost:8445");
             let cert_blob = parse_named_arg(rest, "--cert-blob")
                 .unwrap_or("enrolled.crt");
             let key_blob = parse_named_arg(rest, "--key-blob")
@@ -472,7 +472,7 @@ fn main() {
             let out_key = parse_named_arg(rest, "--out-key")
                 .unwrap_or("enrolled.key");
             let blob_store = parse_named_arg(rest, "--blob-store")
-                .expect("--blob-store is required");
+                .unwrap_or("localhost:8445");
             if let Err(e) = enrollment_client::run(node_id, ra_host, ra_port, out_cert, out_key, blob_store) {
                 eprintln!("enroll error: {e}");
                 std::process::exit(1);
@@ -493,12 +493,12 @@ fn main() {
         }
         _ => {
             eprintln!("Usage:");
-            eprintln!("  sgx-qkms kme --blob-store <host:port> [--cert-blob <name>] [--key-blob <name>] [--addr <host:port>] [--gather <config.toml>]");
+            eprintln!("  sgx-qkms kme [--blob-store <host:port>] [--cert-blob <name>] [--key-blob <name>] [--addr <host:port>] [--gather <config.toml>]");
             eprintln!("  sgx-qkms sae-status-req");
             eprintln!("  sgx-qkms attestation-report");
             eprintln!("  sgx-qkms ca-info");
             eprintln!("  sgx-qkms enroll-service [--ca-cert <path>] [--ca-key <path>] [--addr <host:port>] [--interactive]");
-            eprintln!("  sgx-qkms enroll --node-id <id> --blob-store <host:port> [--ra-host <host>] [--ra-port <port>] [--out-cert <name>] [--out-key <name>]");
+            eprintln!("  sgx-qkms enroll --node-id <id> [--blob-store <host:port>] [--ra-host <host>] [--ra-port <port>] [--out-cert <name>] [--out-key <name>]");
             eprintln!("  sgx-qkms blob-store [--server-cert <path>] [--server-key <path>] [--addr <host:port>]");
             std::process::exit(1);
         }
