@@ -312,10 +312,17 @@ fn verify_csr_and_binding(req: &EnrollRequest) -> Result<(), String> {
         x509_parser::certification_request::X509CertificationRequest::from_der(&pem.contents)
             .map_err(|e| format!("failed to parse CSR DER: {e}"))?;
 
-    csr.verify_signature().map_err(|e| format!("CSR signature invalid: {e}"))?;
-    println!("enroll-service: CSR signature verified (proof-of-possession OK)");
-
     let spki_raw = csr.certification_request_info.subject_pki.raw;
+
+    {
+        let tbs_hash = Sha256::digest(csr.certification_request_info.raw);
+        let sig_bytes = csr.signature_value.as_ref();
+        let mut pk = Pk::from_public_key(spki_raw)
+            .map_err(|e| format!("CSR public key parse failed: {e}"))?;
+        pk.verify(MdType::Sha256, tbs_hash.as_slice(), sig_bytes)
+            .map_err(|e| format!("CSR signature invalid: {e}"))?;
+    }
+    println!("enroll-service: CSR signature verified (proof-of-possession OK)");
 
     let nonce_bytes = hex_decode(&req.nonce)
         .map_err(|e| format!("invalid nonce hex: {e}"))?;
