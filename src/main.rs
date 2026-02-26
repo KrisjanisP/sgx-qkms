@@ -245,6 +245,59 @@ fn run_sample_client() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn print_ca_info() {
+    use x509_parser::extensions::{GeneralName, ParsedExtension};
+    use x509_parser::prelude::parse_x509_certificate;
+
+    let pem = EmbeddedAssets::get("ca.crt").expect("ca.crt not found in embedded assets");
+    let certs = rustls_pemfile::certs(&mut &*pem.data)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("failed to parse embedded CA PEM");
+
+    for (i, cert_der) in certs.iter().enumerate() {
+        let (_, cert) = parse_x509_certificate(cert_der.as_ref())
+            .expect("failed to parse CA certificate");
+
+        println!("--- Embedded CA certificate #{} ---", i + 1);
+        println!("Subject DN: {}", cert.subject());
+        println!("Issuer DN:  {}", cert.issuer());
+
+        for ext in cert.extensions() {
+            if let ParsedExtension::SubjectAlternativeName(san) = ext.parsed_extension() {
+                for name in &san.general_names {
+                    let val = match name {
+                        GeneralName::DNSName(v) => format!("DNS:{v}"),
+                        GeneralName::URI(v) => format!("URI:{v}"),
+                        GeneralName::RFC822Name(v) => format!("email:{v}"),
+                        GeneralName::IPAddress(raw) if raw.len() == 4 => {
+                            format!(
+                                "IP:{}",
+                                std::net::Ipv4Addr::new(raw[0], raw[1], raw[2], raw[3])
+                            )
+                        }
+                        GeneralName::IPAddress(raw) if raw.len() == 16 => {
+                            let mut bytes = [0u8; 16];
+                            bytes.copy_from_slice(raw);
+                            format!("IP:{}", std::net::Ipv6Addr::from(bytes))
+                        }
+                        other => format!("{other:?}"),
+                    };
+                    println!("SAN: {val}");
+                }
+            }
+        }
+
+        println!(
+            "Not before: {}",
+            cert.validity().not_before
+        );
+        println!(
+            "Not after:  {}",
+            cert.validity().not_after
+        );
+    }
+}
+
 #[cfg(target_env = "sgx")]
 fn print_attestation_report() {
     use sgx_isa::{Report, Targetinfo};
@@ -300,11 +353,15 @@ fn main() {
         Some("attestation-report") => {
             print_attestation_report();
         }
+        Some("ca-info") => {
+            print_ca_info();
+        }
         _ => {
             eprintln!("Usage:");
             eprintln!("  sgx-qkms kme [--gather <config.toml>]");
             eprintln!("  sgx-qkms sae-status-req");
             eprintln!("  sgx-qkms attestation-report");
+            eprintln!("  sgx-qkms ca-info");
             std::process::exit(1);
         }
     }
