@@ -1,5 +1,5 @@
 use std::error::Error;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,6 +14,7 @@ use rustls_mbedcrypto_provider::mbedtls_crypto_provider;
 use sha2::{Digest, Sha256};
 
 use crate::enrollment_models::{EnrollResponse, EnrollStatus};
+use crate::http_protocol;
 use crate::load_ca_cert;
 
 pub fn run(
@@ -141,45 +142,42 @@ fn make_tls_config() -> Result<Arc<ClientConfig>, Box<dyn Error>> {
 }
 
 fn tls_post(addr: &str, server_name: &ServerName<'_>, path: &str, body: &str) -> Result<String, Box<dyn Error>> {
-    let config = make_tls_config()?;
-    let mut tcp = TcpStream::connect(addr)?;
-    let mut conn = ClientConnection::new(config, server_name.to_owned())?;
-    while conn.is_handshaking() {
-        conn.complete_io(&mut tcp)?;
-    }
-    let mut tls = StreamOwned::new(conn, tcp);
-
-    let request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    tls.write_all(request.as_bytes())?;
-    tls.flush()?;
-
-    read_response_body(&mut tls)
+    let request = http::Request::builder()
+        .method(http::Method::POST)
+        .uri(path)
+        .header(http::header::HOST, addr)
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .body(body.as_bytes().to_vec())?;
+    let response = send_http_request(addr, server_name, &request)?;
+    parse_text_response(response)
 }
 
 fn tls_put(addr: &str, server_name: &ServerName<'_>, path: &str, body: &[u8]) -> Result<String, Box<dyn Error>> {
-    let config = make_tls_config()?;
-    let mut tcp = TcpStream::connect(addr)?;
-    let mut conn = ClientConnection::new(config, server_name.to_owned())?;
-    while conn.is_handshaking() {
-        conn.complete_io(&mut tcp)?;
-    }
-    let mut tls = StreamOwned::new(conn, tcp);
-
-    let header = format!(
-        "PUT {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    tls.write_all(header.as_bytes())?;
-    tls.write_all(body)?;
-    tls.flush()?;
-
-    read_response_body(&mut tls)
+    let request = http::Request::builder()
+        .method(http::Method::PUT)
+        .uri(path)
+        .header(http::header::HOST, addr)
+        .header(http::header::CONTENT_TYPE, "application/octet-stream")
+        .body(body.to_vec())?;
+    let response = send_http_request(addr, server_name, &request)?;
+    parse_text_response(response)
 }
 
 fn tls_get(addr: &str, server_name: &ServerName<'_>, path: &str) -> Result<String, Box<dyn Error>> {
+    let request = http::Request::builder()
+        .method(http::Method::GET)
+        .uri(path)
+        .header(http::header::HOST, addr)
+        .body(Vec::new())?;
+    let response = send_http_request(addr, server_name, &request)?;
+    parse_text_response(response)
+}
+
+fn send_http_request(
+    addr: &str,
+    server_name: &ServerName<'_>,
+    request: &http::Request<Vec<u8>>,
+) -> Result<http::Response<Vec<u8>>, Box<dyn Error>> {
     let config = make_tls_config()?;
     let mut tcp = TcpStream::connect(addr)?;
     let mut conn = ClientConnection::new(config, server_name.to_owned())?;
@@ -188,23 +186,20 @@ fn tls_get(addr: &str, server_name: &ServerName<'_>, path: &str) -> Result<Strin
     }
     let mut tls = StreamOwned::new(conn, tcp);
 
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
-    );
-    tls.write_all(request.as_bytes())?;
+    let raw_request = http_protocol::serialize_http_request(request)?;
+    tls.write_all(&raw_request)?;
     tls.flush()?;
 
-    read_response_body(&mut tls)
+    let raw_response = http_protocol::read_http_response(&mut tls)?;
+    http_protocol::parse_http_response_message(&raw_response)
 }
 
-fn read_response_body(stream: &mut impl Read) -> Result<String, Box<dyn Error>> {
-    let mut buf = Vec::new();
-    let _ = stream.read_to_end(&mut buf);
-    let text = String::from_utf8_lossy(&buf);
-    let body = text
-        .split_once("\r\n\r\n")
-        .map(|(_, b)| b.to_string())
-        .unwrap_or_else(|| text.to_string());
+fn parse_text_response(response: http::Response<Vec<u8>>) -> Result<String, Box<dyn Error>> {
+    let status = response.status();
+    let body = String::from_utf8_lossy(response.body()).into_owned();
+    if !status.is_success() {
+        return Err(format!("HTTP {status}: {body}").into());
+    }
     Ok(body)
 }
 

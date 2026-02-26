@@ -71,7 +71,8 @@ fn handle_connection(
     let raw = http_protocol::read_http_request(&mut tls_stream)?;
     let parsed = http_protocol::parse_http_request(&raw)?;
     let response = route_request(&parsed, store);
-    tls_stream.write_all(&response.to_http_bytes())?;
+    let response_bytes = http_protocol::serialize_http_response(&response.to_http_response()?)?;
+    tls_stream.write_all(&response_bytes)?;
     tls_stream.flush()?;
     Ok(())
 }

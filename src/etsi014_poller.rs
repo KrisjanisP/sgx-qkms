@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,6 +8,7 @@ use rustls::{ClientConfig, ClientConnection, StreamOwned};
 use rustls_mbedcrypto_provider::mbedtls_crypto_provider;
 
 use crate::api_models::KeyContainer;
+use crate::http_protocol;
 use crate::key_store::{KeyGatherer, KeyStore};
 use crate::{load_ca_cert, load_certs, load_private_key};
 
@@ -79,24 +80,26 @@ impl Etsi014Poller {
         }
         let mut tls = StreamOwned::new(conn, tcp);
 
-        let request_line = format!(
-            "GET /api/v1/keys/{}/enc_keys?number={}&size={} HTTP/1.1\r\n\
-             Host: {}\r\n\
-             Connection: close\r\n\r\n",
-            self.slave_sae_id, self.number, self.size, self.host
-        );
-        tls.write_all(request_line.as_bytes())?;
+        let request = http::Request::builder()
+            .method(http::Method::GET)
+            .uri(format!(
+                "/api/v1/keys/{}/enc_keys?number={}&size={}",
+                self.slave_sae_id, self.number, self.size
+            ))
+            .header(http::header::HOST, &self.host)
+            .body(Vec::new())?;
+        let raw_request = http_protocol::serialize_http_request(&request)?;
+        tls.write_all(&raw_request)?;
         tls.flush()?;
 
-        let mut response = Vec::new();
-        let _ = tls.read_to_end(&mut response);
-        let text = String::from_utf8_lossy(&response);
-        let body = text
-            .split_once("\r\n\r\n")
-            .map(|(_, b)| b)
-            .unwrap_or(&text);
+        let raw_response = http_protocol::read_http_response(&mut tls)?;
+        let response = http_protocol::parse_http_response_message(&raw_response)?;
+        if !response.status().is_success() {
+            let body = String::from_utf8_lossy(response.body());
+            return Err(format!("poller HTTP {}: {body}", response.status()).into());
+        }
 
-        let container: KeyContainer = serde_json::from_str(body)?;
+        let container: KeyContainer = serde_json::from_slice(response.body())?;
         Ok(container)
     }
 }

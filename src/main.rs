@@ -7,7 +7,7 @@ use rustls::{
 use rustls_mbedcrypto_provider::mbedtls_crypto_provider;
 use serde::Deserialize;
 use std::error::Error;
-use std::io::{BufReader, Read, Write};
+use std::io::{BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 use std::{env, fs, fs::File, sync::Arc};
@@ -116,28 +116,26 @@ fn fetch_blob(blob_store_addr: &str, name: &str) -> Result<Vec<u8>, Box<dyn Erro
         conn.complete_io(&mut tcp)?;
     }
     let mut tls = StreamOwned::new(conn, tcp);
-
-    let request = format!(
-        "GET /blob/{name} HTTP/1.1\r\nHost: {blob_store_addr}\r\nConnection: close\r\n\r\n"
-    );
-    tls.write_all(request.as_bytes())?;
+    let request = http::Request::builder()
+        .method(http::Method::GET)
+        .uri(format!("/blob/{name}"))
+        .header(http::header::HOST, blob_store_addr)
+        .body(Vec::new())?;
+    let raw_request = http_protocol::serialize_http_request(&request)?;
+    tls.write_all(&raw_request)?;
     tls.flush()?;
 
-    let mut buf = Vec::new();
-    let _ = tls.read_to_end(&mut buf);
-
-    let header_end = buf
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .ok_or("invalid HTTP response from blob-store")?;
-
-    let status_line = std::str::from_utf8(&buf[..buf.iter().position(|&b| b == b'\r').unwrap_or(header_end)])
-        .unwrap_or("");
-    if !status_line.contains("200") {
-        return Err(format!("blob-store GET /blob/{name}: {status_line}").into());
+    let raw_response = http_protocol::read_http_response(&mut tls)?;
+    let response = http_protocol::parse_http_response_message(&raw_response)?;
+    if !response.status().is_success() {
+        let body = String::from_utf8_lossy(response.body());
+        return Err(format!(
+            "blob-store GET /blob/{name} failed: {} {body}",
+            response.status()
+        ).into());
     }
 
-    Ok(buf[header_end + 4..].to_vec())
+    Ok(response.body().clone())
 }
 
 pub fn print_cert_info(label: &str, cert_path: &str) {
@@ -273,7 +271,8 @@ fn handle_tls_connection(
     let raw = http_protocol::read_http_request(&mut tls_stream)?;
     let parsed = http_protocol::parse_http_request(&raw)?;
     let response = etsi014_handler::route_request(&parsed, &client_identity, store);
-    tls_stream.write_all(&response.to_http_bytes())?;
+    let response_bytes = http_protocol::serialize_http_response(&response.to_http_response()?)?;
+    tls_stream.write_all(&response_bytes)?;
     tls_stream.flush()?;
     println!("served request for '{client_identity}'");
     Ok(())
@@ -301,19 +300,18 @@ fn run_sample_client() -> Result<(), Box<dyn Error>> {
     }
     let mut tls_stream = StreamOwned::new(client_conn, tcp_stream);
 
-    tls_stream
-        .write_all(
-            b"GET /api/v1/keys/test-slave-sae2/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
-        )?;
+    let request = http::Request::builder()
+        .method(http::Method::GET)
+        .uri("/api/v1/keys/test-slave-sae2/status")
+        .header(http::header::HOST, "localhost")
+        .body(Vec::new())?;
+    let raw_request = http_protocol::serialize_http_request(&request)?;
+    tls_stream.write_all(&raw_request)?;
     tls_stream.flush()?;
 
-    let mut response = Vec::new();
-    let _ = tls_stream.read_to_end(&mut response);
-    let response_text = String::from_utf8_lossy(&response);
-    let json = response_text
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body.trim())
-        .unwrap_or_else(|| response_text.trim());
+    let raw_response = http_protocol::read_http_response(&mut tls_stream)?;
+    let response = http_protocol::parse_http_response_message(&raw_response)?;
+    let json = String::from_utf8_lossy(response.body());
     println!("{json}");
 
     Ok(())
