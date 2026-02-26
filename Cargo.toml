@@ -13,3 +13,7 @@ rustls-pemfile = "2"
 x509-parser = "0.16"
 rustls-mbedcrypto-provider = "0.1.1"
 rust-embed = "8"
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+httparse = "1"
+percent-encoding = "2"

@@ -1,3 +1,5 @@
+use percent_encoding::percent_decode_str;
+use std::collections::HashMap;
 use std::error::Error;
 use std::io::Read;
 
@@ -10,6 +12,8 @@ pub enum HttpMethod {
 pub struct ParsedRequest {
     pub method: HttpMethod,
     pub path: String,
+    pub query_params: HashMap<String, String>,
+    pub body: Option<String>,
 }
 
 pub struct HttpResponse {
@@ -42,7 +46,7 @@ impl HttpResponse {
     }
 }
 
-pub fn read_http_request(stream: &mut impl Read) -> Result<String, Box<dyn Error>> {
+pub fn read_http_request(stream: &mut impl Read) -> Result<Vec<u8>, Box<dyn Error>> {
     const MAX_HEADER_BYTES: usize = 64 * 1024;
     let mut buf = Vec::with_capacity(2048);
     let mut chunk = [0_u8; 1024];
@@ -62,24 +66,55 @@ pub fn read_http_request(stream: &mut impl Read) -> Result<String, Box<dyn Error
         }
     }
 
-    Ok(String::from_utf8_lossy(&buf).to_string())
+    Ok(buf)
 }
 
-pub fn parse_http_request(request: &str) -> Result<ParsedRequest, Box<dyn Error>> {
-    let line = request.lines().next().ok_or("empty HTTP request received")?;
-    let mut parts = line.split_whitespace();
+pub fn parse_http_request(raw: &[u8]) -> Result<ParsedRequest, Box<dyn Error>> {
+    let mut headers = [httparse::EMPTY_HEADER; 64];
+    let mut req = httparse::Request::new(&mut headers);
 
-    let method = match parts.next().ok_or("missing HTTP method")? {
+    let header_len = match req.parse(raw)? {
+        httparse::Status::Complete(len) => len,
+        httparse::Status::Partial => return Err("incomplete HTTP request".into()),
+    };
+
+    let method = match req.method.ok_or("missing HTTP method")? {
         "GET" => HttpMethod::Get,
         "POST" => HttpMethod::Post,
         _ => HttpMethod::Other,
     };
 
-    let raw_path = parts.next().ok_or("missing request path")?;
-    let path = raw_path.split('?').next().unwrap_or(raw_path);
+    let raw_path = req.path.ok_or("missing request path")?;
+
+    let (path, query_params) = match raw_path.split_once('?') {
+        Some((p, qs)) => (decode_percent(p), parse_query_string(qs)),
+        None => (decode_percent(raw_path), HashMap::new()),
+    };
+
+    let body = if raw.len() > header_len {
+        Some(String::from_utf8_lossy(&raw[header_len..]).into_owned())
+    } else {
+        None
+    };
 
     Ok(ParsedRequest {
         method,
-        path: path.to_string(),
+        path,
+        query_params,
+        body,
     })
+}
+
+fn decode_percent(s: &str) -> String {
+    percent_decode_str(s).decode_utf8_lossy().into_owned()
+}
+
+fn parse_query_string(qs: &str) -> HashMap<String, String> {
+    qs.split('&')
+        .filter(|pair| !pair.is_empty())
+        .filter_map(|pair| {
+            let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+            Some((decode_percent(k), decode_percent(v)))
+        })
+        .collect()
 }

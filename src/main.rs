@@ -5,10 +5,12 @@ use rustls::{
     server::WebPkiClientVerifier,
 };
 use rustls_mbedcrypto_provider::mbedtls_crypto_provider;
+use serde::Deserialize;
 use std::error::Error;
 use std::io::{BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::{env, fs::File, sync::Arc};
+use std::time::Duration;
+use std::{env, fs, fs::File, sync::Arc};
 use x509_parser::{
     extensions::{GeneralName, ParsedExtension},
     prelude::parse_x509_certificate,
@@ -18,9 +20,34 @@ use x509_parser::{
 #[folder = "embed/"]
 struct EmbeddedAssets;
 
-mod etsi014_handler;
 mod api_models;
+mod etsi014_handler;
+mod etsi014_poller;
 mod http_protocol;
+mod key_store;
+
+#[derive(Debug, Deserialize)]
+struct GatherConfig {
+    host: String,
+    port: u16,
+    server_name: String,
+    client_cert: String,
+    client_key: String,
+    slave_sae_id: String,
+    #[serde(default = "default_number")]
+    number: usize,
+    #[serde(default = "default_size")]
+    size: usize,
+    #[serde(default = "default_interval")]
+    interval_secs: u64,
+    #[serde(default = "default_reservable")]
+    reservable: bool,
+}
+
+fn default_number() -> usize { 10 }
+fn default_size() -> usize { 256 }
+fn default_interval() -> u64 { 5 }
+fn default_reservable() -> bool { true }
 
 fn load_ca_cert() -> RootCertStore {
     let pem = EmbeddedAssets::get("ca.crt").expect("ca.crt not found in embedded EmbeddedAssets");
@@ -84,10 +111,18 @@ fn extract_client_identity(cert: &CertificateDer<'_>) -> Option<String> {
     None
 }
 
-fn run_sample_server() -> Result<(), Box<dyn Error>> {
+fn run_sample_server(gather_config_path: Option<&str>) -> Result<(), Box<dyn Error>> {
     const ADDR: &str = "127.0.0.1:8443";
     const SERVER_CERT_PATH: &str = "certs/sae/server.crt";
     const SERVER_KEY_PATH: &str = "certs/sae/server.key";
+
+    let store = Arc::new(key_store::KeyStore::new());
+
+    if let Some(config_path) = gather_config_path {
+        let toml_str = fs::read_to_string(config_path)?;
+        let cfg: GatherConfig = toml::from_str(&toml_str)?;
+        start_poller(cfg, store.clone());
+    }
 
     let ca_cert_store = load_ca_cert();
     let server_cert_chain = load_certs(SERVER_CERT_PATH);
@@ -109,18 +144,43 @@ fn run_sample_server() -> Result<(), Box<dyn Error>> {
             Err(e) => return Err(e.into()),
         };
         let server_config = server_config.clone();
+        let store = store.clone();
 
         std::thread::spawn(move || {
-            if let Err(e) = handle_tls_connection(tcp_stream, server_config) {
+            if let Err(e) = handle_tls_connection(tcp_stream, server_config, &store) {
                 eprintln!("serve failed for {peer_addr}: {e}");
             }
         });
     }
 }
 
+fn start_poller(cfg: GatherConfig, store: Arc<key_store::KeyStore>) {
+    use key_store::KeyGatherer;
+
+    let poller = etsi014_poller::Etsi014Poller {
+        host: cfg.host,
+        port: cfg.port,
+        server_name: cfg.server_name,
+        client_cert_path: cfg.client_cert,
+        client_key_path: cfg.client_key,
+        slave_sae_id: cfg.slave_sae_id,
+        number: cfg.number,
+        size: cfg.size,
+        interval: Duration::from_secs(cfg.interval_secs),
+        reservable: cfg.reservable,
+    };
+
+    std::thread::spawn(move || {
+        poller.run(store);
+    });
+
+    println!("poller: background thread started");
+}
+
 fn handle_tls_connection(
     mut tcp_stream: TcpStream,
     server_config: Arc<ServerConfig>,
+    store: &Arc<key_store::KeyStore>,
 ) -> Result<(), Box<dyn Error>> {
     let mut server_conn = ServerConnection::new(server_config)?;
     while server_conn.is_handshaking() {
@@ -134,9 +194,9 @@ fn handle_tls_connection(
         .unwrap_or_else(|| "stranger".to_string());
 
     let mut tls_stream = StreamOwned::new(server_conn, tcp_stream);
-    let request = http_protocol::read_http_request(&mut tls_stream)?;
-    let parsed = http_protocol::parse_http_request(&request)?;
-    let response = etsi014_handler::route_request(&parsed, &client_identity);
+    let raw = http_protocol::read_http_request(&mut tls_stream)?;
+    let parsed = http_protocol::parse_http_request(&raw)?;
+    let response = etsi014_handler::route_request(&parsed, &client_identity, store);
     tls_stream.write_all(&response.to_http_bytes())?;
     tls_stream.flush()?;
     println!("served request for '{client_identity}'");
@@ -188,13 +248,13 @@ fn main() {
         .install_default()
         .expect("Failed to install mbedtls CryptoProvider");
 
-    let mut args = env::args();
-    let _program = args.next();
-    let mode = args.next();
+    let args: Vec<String> = env::args().collect();
+    let mode = args.get(1).map(String::as_str);
 
-    match mode.as_deref() {
+    match mode {
         Some("server") => {
-            if let Err(e) = run_sample_server() {
+            let gather_config = parse_gather_flag(&args[2..]);
+            if let Err(e) = run_sample_server(gather_config) {
                 eprintln!("server error: {e}");
                 std::process::exit(1);
             }
@@ -207,9 +267,19 @@ fn main() {
         }
         _ => {
             eprintln!("Usage:");
-            eprintln!("  sgx-qkms server");
+            eprintln!("  sgx-qkms server [--gather <config.toml>]");
             eprintln!("  sgx-qkms client");
             std::process::exit(1);
         }
     }
+}
+
+fn parse_gather_flag(args: &[String]) -> Option<&str> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--gather" {
+            return iter.next().map(String::as_str);
+        }
+    }
+    None
 }
