@@ -20,4 +20,5 @@ percent-encoding = "2"
 sgx-isa = { version = "0.2", features = ["sgxstd"] }
 mbedtls = { version = "0.13", default-features = false, features = ["std", "x509", "rdrand"] }
 sha2 = "0.10"
+asn1-rs = "0.6"
 aes-gcm = "0.10"

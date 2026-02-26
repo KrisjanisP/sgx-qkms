@@ -405,6 +405,15 @@ fn sign_csr(csr_pem: &str, ca: &CaMaterial) -> Result<String, Box<dyn Error>> {
     mbedtls::rng::Random::random(&mut rng, &mut serial)?;
     serial[0] &= 0x7f; // ensure positive ASN.1 INTEGER
 
+    let cn = extract_cn(&csr_subject_dn).unwrap_or(&csr_subject_dn);
+    let san_der = build_san_der(
+        &[cn, "localhost"],
+        &[[127, 0, 0, 1]],
+        &[[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]],
+    );
+    // OID 2.5.29.17 (subjectAltName)
+    const SAN_OID: &[u8] = &[0x55, 0x1d, 0x11];
+
     let cert_pem = mbedtls::x509::certificate::Builder::new()
         .subject(&csr_subject_dn)?
         .issuer(&ca_subject)?
@@ -413,9 +422,44 @@ fn sign_csr(csr_pem: &str, ca: &CaMaterial) -> Result<String, Box<dyn Error>> {
         .serial(&serial)?
         .validity(not_before, not_after)?
         .signature_hash(MdType::Sha256)
+        .extension(SAN_OID, &san_der, false)?
         .write_pem_string(&mut rng)?;
 
     Ok(cert_pem)
+}
+
+fn extract_cn<'a>(dn: &'a str) -> Option<&'a str> {
+    for part in dn.split(',') {
+        let part = part.trim();
+        if let Some(cn) = part.strip_prefix("CN=") {
+            return Some(cn.trim());
+        }
+    }
+    None
+}
+
+fn build_san_der(dns_names: &[&str], ipv4: &[[u8; 4]], ipv6: &[[u8; 16]]) -> Vec<u8> {
+    use asn1_rs::{Error as Asn1Error, Ia5String, Implicit, OctetString, Sequence, TaggedValue, ToDer};
+
+    type DnsName<'a> = TaggedValue<Ia5String<'a>, Asn1Error, Implicit, 2, 2>;
+    type IpAddress<'a> = TaggedValue<OctetString<'a>, Asn1Error, Implicit, 2, 7>;
+
+    let mut general_names = Vec::new();
+    for name in dns_names {
+        let tagged = DnsName::implicit(Ia5String::from(*name));
+        tagged.write_der(&mut general_names).expect("DER encode dNSName");
+    }
+    for addr in ipv4 {
+        let tagged = IpAddress::implicit(OctetString::from(addr.as_slice()));
+        tagged.write_der(&mut general_names).expect("DER encode iPAddress v4");
+    }
+    for addr in ipv6 {
+        let tagged = IpAddress::implicit(OctetString::from(addr.as_slice()));
+        tagged.write_der(&mut general_names).expect("DER encode iPAddress v6");
+    }
+
+    let seq = Sequence::new(general_names.into());
+    seq.to_der_vec().expect("DER encode GeneralNames SEQUENCE")
 }
 
 fn time_from_epoch(secs: u64) -> Time {

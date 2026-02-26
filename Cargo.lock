@@ -1064,6 +1064,7 @@ name = "sgx-qkms"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
+ "asn1-rs",
  "base64",
  "httparse",
  "mbedtls",
